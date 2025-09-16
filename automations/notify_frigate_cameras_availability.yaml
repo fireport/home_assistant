@@ -1,0 +1,45 @@
+alias: Notifiche disponibilità telecamere Frigate
+mode: parallel
+trigger:
+  - platform: state
+    entity_id:
+      - camera.entrata
+      - camera.salone
+    to: unavailable
+    id: offline
+  - platform: state
+    entity_id:
+      - camera.entrata
+      - camera.salone
+    from: unavailable
+    id: online
+condition: []
+action:
+  - variables:
+      camera_name: >-
+        {% if trigger.to_state is not none and trigger.to_state.name %}
+          {{ trigger.to_state.name }}
+        {% elif trigger.from_state is not none and trigger.from_state.name %}
+          {{ trigger.from_state.name }}
+        {% else %}
+          {{ trigger.entity_id }}
+        {% endif %}
+      event_time: >-
+        {{ (trigger.to_state.last_changed if trigger.to_state is not none else now()) | as_timestamp | timestamp_custom('%d/%m/%Y %H:%M:%S') }}
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: offline
+        sequence:
+          - service: notify.telegram
+            data:
+              message: >-
+                📹 La telecamera {{ camera_name }} è diventata NON disponibile il {{ event_time }}.
+      - conditions:
+          - condition: trigger
+            id: online
+        sequence:
+          - service: notify.telegram
+            data:
+              message: >-
+                📹 La telecamera {{ camera_name }} è tornata disponibile il {{ event_time }} (stato: {{ trigger.to_state.state }}).
