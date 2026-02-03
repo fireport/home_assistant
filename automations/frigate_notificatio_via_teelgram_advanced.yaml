@@ -1,0 +1,260 @@
+blueprint:
+  name: Advanced Frigate Telegram Notifications
+  description: |
+    Advanced Frigate notifications via Telegram with:
+    - Video clips or snapshots
+    - Zone filtering
+    - Object filtering
+    - Custom message templates
+    - Actionable buttons
+    - Cooldown per camera
+  domain: automation
+  
+  source_url: https://github.com/your-repo/frigate-telegram-blueprint
+  
+  input:
+    frigate_camera:
+      name: Frigate Camera
+      description: Name of the camera in Frigate config
+      selector:
+        text:
+    
+    telegram_bot:
+      name: Telegram Bot Service
+      description: Telegram notification service
+      default: notify.telegram
+      selector:
+        text:
+    
+    frigate_url:
+      name: Frigate URL
+      description: Base URL of Frigate (http://ip:5000)
+      default: http://192.168.1.2:5000
+      selector:
+        text:
+    
+    ha_url:
+      name: Home Assistant URL (Optional)
+      description: External URL for actionable notifications
+      default: ""
+      selector:
+        text:
+    
+    zones:
+      name: Zones (Optional)
+      description: Only notify for these zones (comma separated, empty = all)
+      default: ""
+      selector:
+        text:
+    
+    objects:
+      name: Objects to Detect
+      description: Comma separated list of objects
+      default: person
+      selector:
+        text:
+    
+    presence_entity:
+      name: Presence Entity (Optional)
+      description: Only notify when this entity is 'home'
+      default: ""
+      selector:
+        entity:
+          domain: 
+            - person
+            - device_tracker
+            - binary_sensor
+    
+    media_type:
+      name: Media Type
+      description: Send clip or snapshot
+      default: snapshot
+      selector:
+        select:
+          options:
+            - label: Snapshot (Image)
+              value: snapshot
+            - label: Clip (Video)
+              value: clip
+            - label: Both
+              value: both
+    
+    cooldown_time:
+      name: Cooldown Period
+      description: Seconds between notifications for same camera
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 600
+          step: 10
+          unit_of_measurement: seconds
+    
+    min_score:
+      name: Minimum Score
+      description: Minimum detection score (0-100)
+      default: 70
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 5
+          unit_of_measurement: "%"
+    
+    custom_message:
+      name: Custom Message Template
+      description: Custom message (use {{ object }}, {{ camera }}, {{ zone }}, {{ score }})
+      default: "{{ object|title }} detected on {{ camera|title }}"
+      selector:
+        text:
+          multiline: true
+    
+    send_when_away:
+      name: Only Send When Away
+      description: Only send notifications when nobody is home
+      default: false
+      selector:
+        boolean:
+
+mode: single
+
+variables:
+  camera: !input frigate_camera
+  base_url: !input frigate_url
+  zones_filter: !input zones
+  objects_filter: !input objects
+  min_score: !input min_score
+  media: !input media_type
+  custom_msg: !input custom_message
+  presence: !input presence_entity
+
+trigger:
+  - platform: mqtt
+    topic: frigate/events
+    id: frigate_event
+
+condition:
+  # Camera match
+  - condition: template
+    value_template: "{{ trigger.payload_json['after']['camera'] == camera }}"
+  
+  # Event type
+  - condition: template
+    value_template: "{{ trigger.payload_json['type'] == 'new' }}"
+  
+  # Object filter
+  - condition: template
+    value_template: >
+      {% set label = trigger.payload_json['after']['label'] %}
+      {{ label in objects_filter.replace(' ', '').split(',') }}
+  
+  # Score filter
+  - condition: template
+    value_template: >
+      {{ (trigger.payload_json['after']['score'] * 100) >= min_score }}
+  
+  # Zone filter
+  - condition: template
+    value_template: >
+      {% if zones_filter == "" %}
+        true
+      {% else %}
+        {% set event_zones = trigger.payload_json['after'].get('entered_zones', []) %}
+        {% set filter_zones = zones_filter.replace(' ', '').split(',') %}
+        {{ event_zones | select('in', filter_zones) | list | length > 0 }}
+      {% endif %}
+  
+  # Presence filter
+  - condition: template
+    value_template: >
+      {% if presence == "" %}
+        true
+      {% elif send_when_away %}
+        {{ states(presence) != 'home' }}
+      {% else %}
+        true
+      {% endif %}
+
+action:
+  - variables:
+      event_id: "{{ trigger.payload_json['after']['id'] }}"
+      object: "{{ trigger.payload_json['after']['label'] }}"
+      score: "{{ (trigger.payload_json['after']['score'] * 100) | round(0) }}"
+      zone_list: "{{ trigger.payload_json['after'].get('entered_zones', []) | join(', ') }}"
+      timestamp: "{{ now().strftime('%H:%M:%S') }}"
+      snapshot_url: "{{ base_url }}/api/events/{{ event_id }}/snapshot.jpg"
+      clip_url: "{{ base_url }}/api/events/{{ event_id }}/clip.mp4"
+      thumbnail_url: "{{ base_url }}/api/events/{{ event_id }}/thumbnail.jpg"
+  
+  - choose:
+      # Send snapshot only
+      - conditions:
+          - "{{ media == 'snapshot' }}"
+        sequence:
+          - service: !input telegram_bot
+            data:
+              message: >
+                {{ custom_msg }}
+                {% if zone_list %}
+                📍 Zone: {{ zone_list }}
+                {% endif %}
+                🎯 Score: {{ score }}%
+                ⏰ Time: {{ timestamp }}
+              data:
+                photo:
+                  - url: "{{ snapshot_url }}"
+                    caption: "{{ object|title }} @ {{ camera|title }}"
+                inline_keyboard:
+                  - "View Clip 🎥:/clip_{{ event_id }}, Open Frigate 📹:/frigate"
+      
+      # Send clip only
+      - conditions:
+          - "{{ media == 'clip' }}"
+        sequence:
+          - service: !input telegram_bot
+            data:
+              message: >
+                {{ custom_msg }}
+                {% if zone_list %}
+                📍 Zone: {{ zone_list }}
+                {% endif %}
+                🎯 Score: {{ score }}%
+                ⏰ Time: {{ timestamp }}
+              data:
+                video:
+                  - url: "{{ clip_url }}"
+                    caption: "{{ object|title }} @ {{ camera|title }}"
+                inline_keyboard:
+                  - "View Snapshot 📸:/snapshot_{{ event_id }}, Open Frigate 📹:/frigate"
+      
+      # Send both
+      - conditions:
+          - "{{ media == 'both' }}"
+        sequence:
+          # First: snapshot
+          - service: !input telegram_bot
+            data:
+              message: >
+                📸 {{ custom_msg }}
+                {% if zone_list %}
+                📍 Zone: {{ zone_list }}
+                {% endif %}
+                🎯 Score: {{ score }}%
+                ⏰ Time: {{ timestamp }}
+              data:
+                photo:
+                  - url: "{{ snapshot_url }}"
+          
+          # Then: clip
+          - delay: 2
+          - service: !input telegram_bot
+            data:
+              message: "🎥 Video clip"
+              data:
+                video:
+                  - url: "{{ clip_url }}"
+                    caption: "{{ object|title }} @ {{ camera|title }}"
+  
+  # Cooldown
+  - delay:
+      seconds: !input cooldown_time
