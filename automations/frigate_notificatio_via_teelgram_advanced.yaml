@@ -64,6 +64,7 @@ blueprint:
             - person
             - device_tracker
             - binary_sensor
+            - group
     
     media_type:
       name: Media Type
