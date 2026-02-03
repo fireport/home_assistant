@@ -1,0 +1,153 @@
+blueprint:
+  name: Frigate Telegram Notification with Clip/Snapshot
+  description: |
+    Send Telegram notifications for Frigate events with video clips or snapshots.
+    Uses modern Frigate API and supports actionable notifications.
+  domain: automation
+  
+  input:
+    camera:
+      name: Camera
+      description: The name of the camera as defined in Frigate
+      selector:
+        text:
+    
+    notify_service:
+      name: Telegram Notify Service
+      description: The Telegram notify service (e.g., notify.telegram)
+      selector:
+        text:
+      default: notify.telegram
+    
+    base_url:
+      name: Frigate Base URL
+      description: The base URL of your Frigate instance
+      selector:
+        text:
+      default: http://homeassistant.local:5000
+    
+    zone_filter:
+      name: Zone Filter (Optional)
+      description: Only notify if object enters this zone
+      selector:
+        text:
+      default: ""
+    
+    object_filter:
+      name: Object Filter
+      description: Object types to notify about (comma separated)
+      selector:
+        text:
+      default: person,car,dog,cat
+    
+    cooldown:
+      name: Cooldown (seconds)
+      description: Minimum time between notifications for same camera
+      selector:
+        number:
+          min: 0
+          max: 300
+          step: 1
+      default: 30
+    
+    attachment_type:
+      name: Attachment Type
+      description: Send clip (video) or snapshot (image)
+      selector:
+        select:
+          options:
+            - clip
+            - snapshot
+      default: snapshot
+    
+    critical:
+      name: Critical Notification
+      description: Mark notification as critical (bypasses Do Not Disturb)
+      selector:
+        boolean:
+      default: false
+
+mode: single
+max_exceeded: silent
+
+variables:
+  camera_name: !input camera
+  base_url: !input base_url
+  zone_filter: !input zone_filter
+  object_filter: !input object_filter
+  attachment_type: !input attachment_type
+  
+trigger:
+  - platform: mqtt
+    topic: frigate/events
+    id: frigate_event
+
+condition:
+  - condition: template
+    value_template: >
+      {{ trigger.payload_json['after']['camera'] == camera_name }}
+  
+  - condition: template
+    value_template: >
+      {{ trigger.payload_json['type'] == 'new' }}
+  
+  - condition: template
+    value_template: >
+      {% set obj = trigger.payload_json['after']['label'] %}
+      {{ obj in object_filter.split(',') }}
+  
+  - condition: template
+    value_template: >
+      {% if zone_filter == "" %}
+        true
+      {% else %}
+        {{ zone_filter in trigger.payload_json['after'].get('entered_zones', []) }}
+      {% endif %}
+
+action:
+  - variables:
+      event_id: "{{ trigger.payload_json['after']['id'] }}"
+      object_label: "{{ trigger.payload_json['after']['label'] }}"
+      camera: "{{ trigger.payload_json['after']['camera'] }}"
+      zone: "{{ trigger.payload_json['after'].get('current_zones', [])|join(', ') }}"
+      score: "{{ (trigger.payload_json['after']['score'] * 100) | int }}"
+      
+  - choose:
+      # Send with video clip
+      - conditions:
+          - condition: template
+            value_template: "{{ attachment_type == 'clip' }}"
+        sequence:
+          - service: !input notify_service
+            data:
+              message: |
+                🎥 {{ object_label|title }} detected on {{ camera|replace('_', ' ')|title }}
+                📍 Zone: {{ zone if zone else 'No zone' }}
+                🎯 Confidence: {{ score }}%
+              data:
+                video:
+                  - url: "{{ base_url }}/api/events/{{ event_id }}/clip.mp4"
+                    caption: "{{ object_label|title }} - {{ camera|replace('_', ' ')|title }}"
+                inline_keyboard:
+                  - "View Snapshot:/view_snapshot_{{ event_id }}"
+                  - "Open Frigate:/open_frigate"
+    
+      # Send with snapshot
+      default:
+        - service: !input notify_service
+          data:
+            message: |
+              📸 {{ object_label|title }} detected on {{ camera|replace('_', ' ')|title }}
+              📍 Zone: {{ zone if zone else 'No zone' }}
+              🎯 Confidence: {{ score }}%
+            data:
+              photo:
+                - url: "{{ base_url }}/api/events/{{ event_id }}/snapshot.jpg"
+                  caption: "{{ object_label|title }} - {{ camera|replace('_', ' ')|title }}"
+              inline_keyboard:
+                - "View Clip:/view_clip_{{ event_id }}"
+                - "Open Frigate:/open_frigate"
+  
+  # Cooldown
+  - delay:
+      seconds: !input cooldown
