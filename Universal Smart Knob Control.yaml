@@ -1,0 +1,144 @@
+blueprint:
+  name: Universal Smart Knob Control
+  description: Control any entity with a Smart Knob using customizable rotation and click actions
+  domain: automation
+  input:
+    brightness_delta_sensor:
+      name: Brightness Delta Sensor
+      description: Sensor providing brightness delta values from Smart Knob rotation
+      selector:
+        entity:
+          filter:
+            domain: sensor
+            integration: mqtt        
+    step_size_sensor:
+      name: Action Step Size Sensor
+      description: Sensor providing the step size unsigned, can be used with the pressed rotation
+      selector:
+        entity:
+          filter:
+            domain: sensor
+            integration: mqtt
+    event_entity:
+      name: Smart Knob Event Sensor
+      description: Sensor providing all events from the knob (toggle and rotations)
+      selector:
+        entity:
+          filter:
+            domain: event
+            integration: mqtt
+    sensitivity_brightness:
+      name: Sensitivity Brightness
+      description: factor the delta_value for the brightness action is multiplied with to adjust the strength of the control
+      selector:
+        number:
+          min: 0.01
+          max: 10
+          step: 0.01
+          mode: box
+      default: 0.5
+    sensitivity_color:
+      name: Sensitivity Color
+      description: factor the delta_value for the color action is multiplied with to adjust the strength of the control
+      selector:
+        number:
+          min: 0.01
+          max: 10
+          step: 0.01
+          mode: box
+      default: 0.5
+    rotation_action:
+      name: Rotation Action
+      description: Action to execute when rotating the knob. Uses 'delta_value' variable for the rotation value.
+      default: []
+      selector:
+        action: {}
+    color_rotation_action:
+      name: Color Rotation Action
+      description: Action to execute when rotating the knob while pressed. Uses 'delta_value' variable for the rotation value.
+      default: []
+      selector:
+        action: {}
+    click_action:
+      name: Click Action
+      description: Action to execute when clicking the knob
+      default: []
+      selector:
+        action: {}
+
+mode: parallel
+max_exceeded: silent
+
+variables:
+  event_entity: !input event_entity
+  brightness_delta_sensor: !input brightness_delta_sensor
+  step_size_sensor: !input step_size_sensor
+
+trigger:
+  - trigger: state
+    entity_id: !input event_entity
+
+condition:
+  - condition: template
+    value_template: >
+      {{ trigger.to_state.state not in ['unavailable', 'unknown'] }}
+  - condition: template
+    value_template: >
+      {{ trigger.from_state.state not in ['unavailable', 'unknown'] }}
+
+
+action:
+  - variables:
+      sensitivity_brightness: !input sensitivity_brightness
+      sensitivity_color: !input sensitivity_color
+      command: "{{ state_attr(event_entity, 'event_type') }}"
+      brightness_delta: "{{ states(brightness_delta_sensor) | float(0) * sensitivity_brightness }}"
+      step_size: "{{ states(step_size_sensor) | float(0) * sensitivity_color }}"
+  - choose:
+      # Handle rotation action
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ command == 'brightness_step' }}
+        sequence:
+          - variables:
+              delta_value: "{{ brightness_delta }}"
+          - alias: "Execute rotation action"
+            sequence: !input rotation_action
+
+      # Handle color rotation action up
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ command == 'color_temperature_step_up' }}
+        sequence:
+          - variables:
+              delta_value: "{{ step_size }}"
+          - alias: "Execute color rotation action"
+            sequence: !input color_rotation_action
+
+      # Handle color rotation action down
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ command == 'color_temperature_step_down' }}
+        sequence:
+          - variables:
+              delta_value: "{{ - step_size }}"
+          - alias: "Execute color rotation action"
+            sequence: !input color_rotation_action
+
+      # Handle click action
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ command == 'toggle' }}
+        sequence:
+          - alias: "Execute click action"
+            sequence: !input click_action
+
+    default:
+      - action: logbook.log
+        data:
+          name: "Smart Knob Debug"
+          message: "Unhandled command: {{ command }}"
