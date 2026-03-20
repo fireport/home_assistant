@@ -24,6 +24,15 @@ blueprint:
       selector:
         text:
 
+    z2m_base_topic:
+      name: Topic base Zigbee2MQTT
+      description: >
+        Il topic base di Zigbee2MQTT. Modificare solo se è stato
+        cambiato nella configurazione di Z2M (default: zigbee2mqtt).
+      default: zigbee2mqtt
+      selector:
+        text:
+
     media_player_entity:
       name: Media Player
       description: >
@@ -49,9 +58,7 @@ blueprint:
 
     action_rotate_right:
       name: Action – Rotazione oraria
-      description: >
-        Nome dell'action Z2M per la rotazione oraria.
-        Controlla con MQTT Explorer se necessario.
+      description: Nome dell'action Z2M per la rotazione oraria.
       default: brightness_step_up
       selector:
         select:
@@ -63,8 +70,7 @@ blueprint:
 
     action_rotate_left:
       name: Action – Rotazione antioraria
-      description: >
-        Nome dell'action Z2M per la rotazione antioraria.
+      description: Nome dell'action Z2M per la rotazione antioraria.
       default: brightness_step_down
       selector:
         select:
@@ -76,8 +82,7 @@ blueprint:
 
     action_single:
       name: Action – Pressione breve (Play/Pausa)
-      description: >
-        Nome dell'action Z2M per la pressione singola.
+      description: Nome dell'action Z2M per la pressione singola.
       default: toggle
       selector:
         select:
@@ -89,8 +94,7 @@ blueprint:
 
     action_double:
       name: Action – Doppia pressione (Traccia successiva)
-      description: >
-        Nome dell'action Z2M per la doppia pressione.
+      description: Nome dell'action Z2M per la doppia pressione.
       default: double
       selector:
         select:
@@ -101,8 +105,7 @@ blueprint:
 
     action_hold:
       name: Action – Pressione lunga (Traccia precedente)
-      description: >
-        Nome dell'action Z2M per la pressione lunga.
+      description: Nome dell'action Z2M per la pressione lunga.
       default: hold
       selector:
         select:
@@ -114,9 +117,7 @@ blueprint:
 
     action_triple:
       name: Action – Tripla pressione (Mute)
-      description: >
-        Nome dell'action Z2M per la tripla pressione.
-        Lasciare vuoto per disabilitare.
+      description: Nome dell'action Z2M per la tripla pressione.
       default: triple
       selector:
         select:
@@ -124,6 +125,25 @@ blueprint:
             - triple
             - "3_min_click"
           custom_value: true
+
+# ──────────────────────────────────────────────
+# TRIGGER VARIABLES
+# L'unico modo supportato da HA per rendere il topic
+# MQTT dinamico in un blueprint è usare trigger_variables
+# con !input, che vengono poi interpolate nel topic
+# tramite template Jinja2.
+# ──────────────────────────────────────────────
+trigger_variables:
+  z2m_topic: !input z2m_base_topic
+  z2m_device: !input z2m_friendly_name
+
+# ──────────────────────────────────────────────
+# TRIGGER
+# ──────────────────────────────────────────────
+trigger:
+  - platform: mqtt
+    topic: "{{ z2m_topic }}/{{ z2m_device }}"
+    id: knob_event
 
 # ──────────────────────────────────────────────
 # VARIABILI
@@ -137,25 +157,18 @@ variables:
   act_double: !input action_double
   act_hold: !input action_hold
   act_triple: !input action_triple
-  z2m_name: !input z2m_friendly_name
-
-# ──────────────────────────────────────────────
-# TRIGGER – un unico trigger MQTT
-# ──────────────────────────────────────────────
-trigger:
-  - platform: mqtt
-    topic: "zigbee2mqtt/{{ z2m_name }}"
-    id: knob_event
 
 # ──────────────────────────────────────────────
 # CONDITION
 # ──────────────────────────────────────────────
 condition:
   - condition: template
-    value_template: "{{ trigger.payload_json.action is defined and trigger.payload_json.action != '' }}"
+    value_template: >
+      {{ trigger.payload_json.action is defined
+         and trigger.payload_json.action != '' }}
 
 # ──────────────────────────────────────────────
-# AZIONI – choose basato sull'action ricevuta
+# AZIONI
 # ──────────────────────────────────────────────
 action:
   - variables:
