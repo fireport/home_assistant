@@ -1,0 +1,117 @@
+blueprint:
+  name: "Moes ZG-101ZD – Knob Event Mode – Media Player"
+  description: >
+    Controlla il volume e il play/pausa di un media player (Music Assistant)
+    tramite il knob Moes ZG-101ZD in modalità **event** via Zigbee2MQTT.
+
+    Il trigger ascolta direttamente il topic MQTT del dispositivo
+    e legge il campo "action" dal payload JSON.
+
+    **Azioni supportate:**
+    - 🔊 Rotazione oraria  → Volume su
+    - 🔉 Rotazione antioraria → Volume giù
+    - ⏸ Pressione breve → Play / Pausa
+
+  domain: automation
+  input:
+
+    mqtt_topic:
+      name: Topic MQTT del knob
+      description: >
+        Topic MQTT completo del dispositivo.
+        Formato: zigbee2mqtt/FRIENDLY_NAME
+      default: zigbee2mqtt/knob_volume
+      selector:
+        text:
+
+    media_player_entity:
+      name: Media Player
+      description: >
+        Entità del media player da controllare
+        (es. media_player.redmi_note_8_pro).
+      selector:
+        entity:
+          domain: media_player
+
+    volume_step:
+      name: Step volume (%)
+      description: Di quanto varia il volume ad ogni scatto del knob (default 5%).
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 20
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+# ──────────────────────────────────────────────
+# VARIABILI
+# ──────────────────────────────────────────────
+variables:
+  player: !input media_player_entity
+  step: !input volume_step
+
+# ──────────────────────────────────────────────
+# TRIGGER
+# topic con !input diretto — unico modo affidabile
+# nei blueprint per passare il topic come parametro.
+# ──────────────────────────────────────────────
+trigger:
+  - platform: mqtt
+    topic: !input mqtt_topic
+
+# ──────────────────────────────────────────────
+# CONDITION – scarta messaggi senza action valida
+# (es. aggiornamenti battery, linkquality, ecc.)
+# ──────────────────────────────────────────────
+condition:
+  - condition: template
+    value_template: >
+      {{ trigger.payload_json.action is defined
+         and trigger.payload_json.action not in ['', none] }}
+
+# ──────────────────────────────────────────────
+# AZIONI
+# ──────────────────────────────────────────────
+action:
+  - variables:
+      action: "{{ trigger.payload_json.action }}"
+
+  - choose:
+
+      # 🔊 VOLUME SU
+      - conditions:
+          - condition: template
+            value_template: "{{ action == 'rotate_right' }}"
+        sequence:
+          - service: media_player.volume_set
+            target:
+              entity_id: !input media_player_entity
+            data:
+              volume_level: >
+                {{ [ (state_attr(player, 'volume_level') | float(0)) + (step / 100), 1.0 ] | min | round(2) }}
+
+      # 🔉 VOLUME GIÙ
+      - conditions:
+          - condition: template
+            value_template: "{{ action == 'rotate_left' }}"
+        sequence:
+          - service: media_player.volume_set
+            target:
+              entity_id: !input media_player_entity
+            data:
+              volume_level: >
+                {{ [ (state_attr(player, 'volume_level') | float(0)) - (step / 100), 0.0 ] | max | round(2) }}
+
+      # ⏸ PLAY / PAUSA
+      - conditions:
+          - condition: template
+            value_template: "{{ action in ['toggle', 'single', 'start'] }}"
+        sequence:
+          - service: media_player.media_play_pause
+            target:
+              entity_id: !input media_player_entity
+
+mode: queued
+max: 10
