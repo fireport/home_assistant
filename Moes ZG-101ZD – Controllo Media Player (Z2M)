@@ -1,0 +1,230 @@
+blueprint:
+  name: "Moes ZG-101ZD – Controllo Media Player (Z2M)"
+  description: >
+    Controlla volume, play/pausa, traccia precedente/successiva e mute
+    di un media player (Music Assistant) tramite il knob Moes ZG-101ZD
+    collegato via Zigbee2MQTT.
+
+    **Azioni supportate:**
+    - 🔊 Rotazione oraria → Volume su
+    - 🔉 Rotazione antioraria → Volume giù
+    - ⏸ Pressione breve → Play / Pausa
+    - ⏭ Doppia pressione → Traccia successiva
+    - ⏮ Pressione lunga → Traccia precedente
+    - 🔇 Tripla pressione → Mute / Unmute
+
+  domain: automation
+  input:
+    z2m_friendly_name:
+      name: Friendly Name Z2M del Knob
+      description: >
+        Il "friendly name" del dispositivo in Zigbee2MQTT
+        (es. knob_volume). Controlla in Z2M → Devices.
+      default: knob_volume
+      selector:
+        text:
+
+    media_player_entity:
+      name: Media Player
+      description: >
+        L'entità del media player da controllare
+        (es. media_player.redmi_note_8_pro).
+      selector:
+        entity:
+          domain: media_player
+
+    volume_step:
+      name: Step volume (%)
+      description: >
+        Di quanto varia il volume ad ogni scatto del knob.
+        Valore tra 1 e 20 (default 5%).
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 20
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    action_rotate_right:
+      name: Action – Rotazione oraria
+      description: >
+        Nome dell'action Z2M per la rotazione oraria.
+        Controlla con MQTT Explorer se necessario.
+      default: brightness_step_up
+      selector:
+        select:
+          options:
+            - brightness_step_up
+            - start_rotate_right
+            - rotate_right
+          custom_value: true
+
+    action_rotate_left:
+      name: Action – Rotazione antioraria
+      description: >
+        Nome dell'action Z2M per la rotazione antioraria.
+      default: brightness_step_down
+      selector:
+        select:
+          options:
+            - brightness_step_down
+            - start_rotate_left
+            - rotate_left
+          custom_value: true
+
+    action_single:
+      name: Action – Pressione breve (Play/Pausa)
+      description: >
+        Nome dell'action Z2M per la pressione singola.
+      default: toggle
+      selector:
+        select:
+          options:
+            - toggle
+            - single
+            - "1_min_click"
+          custom_value: true
+
+    action_double:
+      name: Action – Doppia pressione (Traccia successiva)
+      description: >
+        Nome dell'action Z2M per la doppia pressione.
+      default: double
+      selector:
+        select:
+          options:
+            - double
+            - "2_min_click"
+          custom_value: true
+
+    action_hold:
+      name: Action – Pressione lunga (Traccia precedente)
+      description: >
+        Nome dell'action Z2M per la pressione lunga.
+      default: hold
+      selector:
+        select:
+          options:
+            - hold
+            - long_click
+            - start_long_click
+          custom_value: true
+
+    action_triple:
+      name: Action – Tripla pressione (Mute)
+      description: >
+        Nome dell'action Z2M per la tripla pressione.
+        Lasciare vuoto per disabilitare.
+      default: triple
+      selector:
+        select:
+          options:
+            - triple
+            - "3_min_click"
+          custom_value: true
+
+# ──────────────────────────────────────────────
+# VARIABILI
+# ──────────────────────────────────────────────
+variables:
+  player: !input media_player_entity
+  step: !input volume_step
+  act_right: !input action_rotate_right
+  act_left: !input action_rotate_left
+  act_single: !input action_single
+  act_double: !input action_double
+  act_hold: !input action_hold
+  act_triple: !input action_triple
+  z2m_name: !input z2m_friendly_name
+
+# ──────────────────────────────────────────────
+# TRIGGER – un unico trigger MQTT
+# ──────────────────────────────────────────────
+trigger:
+  - platform: mqtt
+    topic: "zigbee2mqtt/{{ z2m_name }}"
+    id: knob_event
+
+# ──────────────────────────────────────────────
+# CONDITION
+# ──────────────────────────────────────────────
+condition:
+  - condition: template
+    value_template: "{{ trigger.payload_json.action is defined and trigger.payload_json.action != '' }}"
+
+# ──────────────────────────────────────────────
+# AZIONI – choose basato sull'action ricevuta
+# ──────────────────────────────────────────────
+action:
+  - variables:
+      received_action: "{{ trigger.payload_json.action }}"
+
+  - choose:
+
+      # 🔊 VOLUME SU
+      - conditions:
+          - condition: template
+            value_template: "{{ received_action == act_right }}"
+        sequence:
+          - service: media_player.volume_set
+            target:
+              entity_id: !input media_player_entity
+            data:
+              volume_level: >
+                {{ [((state_attr(player, 'volume_level') | float(0)) + (step / 100)), 1.0] | min | round(2) }}
+
+      # 🔉 VOLUME GIÙ
+      - conditions:
+          - condition: template
+            value_template: "{{ received_action == act_left }}"
+        sequence:
+          - service: media_player.volume_set
+            target:
+              entity_id: !input media_player_entity
+            data:
+              volume_level: >
+                {{ [((state_attr(player, 'volume_level') | float(0)) - (step / 100)), 0.0] | max | round(2) }}
+
+      # ⏸ PLAY / PAUSA
+      - conditions:
+          - condition: template
+            value_template: "{{ received_action == act_single }}"
+        sequence:
+          - service: media_player.media_play_pause
+            target:
+              entity_id: !input media_player_entity
+
+      # ⏭ TRACCIA SUCCESSIVA
+      - conditions:
+          - condition: template
+            value_template: "{{ received_action == act_double }}"
+        sequence:
+          - service: media_player.media_next_track
+            target:
+              entity_id: !input media_player_entity
+
+      # ⏮ TRACCIA PRECEDENTE
+      - conditions:
+          - condition: template
+            value_template: "{{ received_action == act_hold }}"
+        sequence:
+          - service: media_player.media_previous_track
+            target:
+              entity_id: !input media_player_entity
+
+      # 🔇 MUTE / UNMUTE
+      - conditions:
+          - condition: template
+            value_template: "{{ received_action == act_triple and act_triple != '' }}"
+        sequence:
+          - service: media_player.volume_mute
+            target:
+              entity_id: !input media_player_entity
+            data:
+              is_volume_muted: >
+                {{ not (state_attr(player, 'is_volume_muted') | bool(false)) }}
+
+mode: queued
+max: 5
