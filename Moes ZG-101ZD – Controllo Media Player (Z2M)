@@ -5,6 +5,10 @@ blueprint:
     di un media player (Music Assistant) tramite il knob Moes ZG-101ZD
     collegato via Zigbee2MQTT.
 
+    **Come trovare il sensor action del knob:**
+    Vai in Impostazioni → Dispositivi e Servizi → MQTT → cerca il tuo
+    knob → seleziona l'entità "Action" (es. sensor.knob_volume_action).
+
     **Azioni supportate:**
     - 🔊 Rotazione oraria → Volume su
     - 🔉 Rotazione antioraria → Volume giù
@@ -15,23 +19,16 @@ blueprint:
 
   domain: automation
   input:
-    z2m_friendly_name:
-      name: Friendly Name Z2M del Knob
+    action_sensor:
+      name: Sensor Action del Knob
       description: >
-        Il "friendly name" del dispositivo in Zigbee2MQTT
-        (es. knob_volume). Controlla in Z2M → Devices.
-      default: knob_volume
+        L'entità sensor che Z2M crea per le action del knob.
+        Di solito è sensor.NOME_KNOB_action
+        (es. sensor.knob_volume_action).
+        Cercala in Impostazioni → Dispositivi → il tuo knob.
       selector:
-        text:
-
-    z2m_base_topic:
-      name: Topic base Zigbee2MQTT
-      description: >
-        Il topic base di Zigbee2MQTT. Modificare solo se è stato
-        cambiato nella configurazione di Z2M (default: zigbee2mqtt).
-      default: zigbee2mqtt
-      selector:
-        text:
+        entity:
+          domain: sensor
 
     media_player_entity:
       name: Media Player
@@ -57,24 +54,33 @@ blueprint:
           mode: slider
 
     action_rotate_right:
-      name: Action – Rotazione oraria
-      description: Nome dell'action Z2M per la rotazione oraria.
-      default: brightness_step_up
+      name: Action – Rotazione oraria (Volume su)
+      description: >
+        Valore dell'action per la rotazione oraria.
+        In modalità "command" girare a destra invia
+        brightness_step_down — verifica con MQTT Explorer
+        e imposta il valore corretto.
+      default: brightness_step_down
       selector:
         select:
           options:
+            - brightness_step_down
             - brightness_step_up
             - start_rotate_right
             - rotate_right
           custom_value: true
 
     action_rotate_left:
-      name: Action – Rotazione antioraria
-      description: Nome dell'action Z2M per la rotazione antioraria.
-      default: brightness_step_down
+      name: Action – Rotazione antioraria (Volume giù)
+      description: >
+        Valore dell'action per la rotazione antioraria.
+        In modalità "command" girare a sinistra invia
+        brightness_step_up.
+      default: brightness_step_up
       selector:
         select:
           options:
+            - brightness_step_up
             - brightness_step_down
             - start_rotate_left
             - rotate_left
@@ -82,7 +88,7 @@ blueprint:
 
     action_single:
       name: Action – Pressione breve (Play/Pausa)
-      description: Nome dell'action Z2M per la pressione singola.
+      description: Valore dell'action per la pressione singola.
       default: toggle
       selector:
         select:
@@ -94,7 +100,7 @@ blueprint:
 
     action_double:
       name: Action – Doppia pressione (Traccia successiva)
-      description: Nome dell'action Z2M per la doppia pressione.
+      description: Valore dell'action per la doppia pressione.
       default: double
       selector:
         select:
@@ -105,7 +111,7 @@ blueprint:
 
     action_hold:
       name: Action – Pressione lunga (Traccia precedente)
-      description: Nome dell'action Z2M per la pressione lunga.
+      description: Valore dell'action per la pressione lunga.
       default: hold
       selector:
         select:
@@ -116,8 +122,8 @@ blueprint:
           custom_value: true
 
     action_triple:
-      name: Action – Tripla pressione (Mute)
-      description: Nome dell'action Z2M per la tripla pressione.
+      name: Action – Tripla pressione (Mute/Unmute)
+      description: Valore dell'action per la tripla pressione.
       default: triple
       selector:
         select:
@@ -125,25 +131,6 @@ blueprint:
             - triple
             - "3_min_click"
           custom_value: true
-
-# ──────────────────────────────────────────────
-# TRIGGER VARIABLES
-# L'unico modo supportato da HA per rendere il topic
-# MQTT dinamico in un blueprint è usare trigger_variables
-# con !input, che vengono poi interpolate nel topic
-# tramite template Jinja2.
-# ──────────────────────────────────────────────
-trigger_variables:
-  z2m_topic: !input z2m_base_topic
-  z2m_device: !input z2m_friendly_name
-
-# ──────────────────────────────────────────────
-# TRIGGER
-# ──────────────────────────────────────────────
-trigger:
-  - platform: mqtt
-    topic: "{{ z2m_topic }}/{{ z2m_device }}"
-    id: knob_event
 
 # ──────────────────────────────────────────────
 # VARIABILI
@@ -159,24 +146,34 @@ variables:
   act_triple: !input action_triple
 
 # ──────────────────────────────────────────────
-# CONDITION
+# TRIGGER – cambio di stato del sensor action Z2M
+# ──────────────────────────────────────────────
+trigger:
+  - platform: state
+    entity_id: !input action_sensor
+    id: knob_event
+
+# ──────────────────────────────────────────────
+# CONDITION – ignora stati vuoti/unavailable
+# e il caso in cui lo stato non cambia
+# (Z2M in modalità command può ripetere lo stesso
+# valore: usiamo last_changed per rilevarlo)
 # ──────────────────────────────────────────────
 condition:
   - condition: template
     value_template: >
-      {{ trigger.payload_json.action is defined
-         and trigger.payload_json.action != '' }}
+      {{ trigger.to_state.state not in ['', 'unknown', 'unavailable', 'none'] }}
 
 # ──────────────────────────────────────────────
 # AZIONI
 # ──────────────────────────────────────────────
 action:
   - variables:
-      received_action: "{{ trigger.payload_json.action }}"
+      received_action: "{{ trigger.to_state.state }}"
 
   - choose:
 
-      # 🔊 VOLUME SU
+      # 🔊 VOLUME SU (rotazione oraria in modalità command)
       - conditions:
           - condition: template
             value_template: "{{ received_action == act_right }}"
@@ -188,7 +185,7 @@ action:
               volume_level: >
                 {{ [((state_attr(player, 'volume_level') | float(0)) + (step / 100)), 1.0] | min | round(2) }}
 
-      # 🔉 VOLUME GIÙ
+      # 🔉 VOLUME GIÙ (rotazione antioraria in modalità command)
       - conditions:
           - condition: template
             value_template: "{{ received_action == act_left }}"
